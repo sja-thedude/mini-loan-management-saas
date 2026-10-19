@@ -18,7 +18,7 @@ Role: Senior Full-Stack AWS Engineer / Technical Lead.
 | Real AWS: Budgets, Access Analyzer, CloudTrail, temporary-credential CLI login | ✅ Done on my real account at $0 | 0 Access Analyzer findings |
 | Real AWS deployment of ECS/RDS/Lambda | ❌ **Not done.** My Free-plan account's SCP blocks those services | Explicit-deny errors |
 | Public demo | ✅ Cloudflare Pages: https://mini-loan-saas-demo.pages.dev | Live |
-| CI/CD | ✅ Workflows written (tests, emulator, Terraform validate, arm64 images, Pages deploy), ☐ not yet run on GitHub | `.github/workflows/` |
+| CI/CD | ✅ CI green on GitHub: Postgres + AWS emulator services, Terraform fmt/validate, 47 tests, arm64 image builds. Pages auto-deploy workflow ready (needs `CLOUDFLARE_API_TOKEN`) | [CI run](https://github.com/sja-thedude/mini-loan-management-saas/actions/runs/39245653401) |
 
 **If Faraz asks "have you deployed ECS/RDS in production?"** Answer: *"Not in a job yet, and I want
 to be precise about that. I built this project to close the gap. I designed and validated the
