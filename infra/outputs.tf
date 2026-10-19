@@ -1,0 +1,13 @@
+output "region" { value = var.region }
+output "ecr_api" { value = aws_ecr_repository.repo["api"].repository_url }
+output "ecr_web" { value = aws_ecr_repository.repo["web"].repository_url }
+output "ecr_registry" { value = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com" }
+output "cluster" { value = aws_ecs_cluster.main.name }
+output "service" { value = aws_ecs_service.app.name }
+output "public_subnets" { value = join(",", aws_subnet.public[*].id) }
+output "app_security_group" { value = aws_security_group.app.id }
+output "documents_bucket" { value = module.app.documents_bucket }
+output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
+output "worker_function" { value = aws_lambda_function.worker.function_name }
+output "log_group" { value = aws_cloudwatch_log_group.app.name }
+output "db_endpoint" { value = aws_db_instance.main.address }
