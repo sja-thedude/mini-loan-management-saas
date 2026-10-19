@@ -9,7 +9,8 @@
     "migrate": "dotenv -e .env -- prisma migrate deploy",
     "seed": "tsx --env-file=.env prisma/seed.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "generate": "prisma generate"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1152.0",
