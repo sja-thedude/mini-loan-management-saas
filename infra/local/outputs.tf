@@ -1,0 +1,11 @@
+output "kms_key_arn" { value = module.app.kms_key_arn }
+output "documents_bucket" { value = module.app.documents_bucket }
+output "event_bus" { value = module.app.event_bus }
+output "events_queue_url" { value = module.app.events_queue_url }
+output "events_dlq_url" { value = module.app.events_dlq_url }
+output "ops_topic_arn" { value = module.app.ops_topic_arn }
+output "ops_inbox_url" { value = module.app.ops_inbox_url }
+output "notifications_table" { value = module.app.notifications_table }
+output "jwt_secret_id" { value = module.app.jwt_secret_id }
+output "api_policy_json" { value = module.app.api_policy_json }
+output "worker_policy_json" { value = module.app.worker_policy_json }

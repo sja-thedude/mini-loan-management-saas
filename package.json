@@ -1,0 +1,24 @@
+{
+  "name": "mini-loan-management-saas",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "apps/worker"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run migrate -w apps/api",
+    "db:seed": "npm run seed -w apps/api",
+    "dev": "concurrently -n api,web,worker -c blue,green,magenta \"npm run dev -w apps/api\" \"npm run dev -w apps/web\" \"npm run dev -w apps/worker\"",
+    "test": "npm test -w apps/api && npm test -w apps/worker && npm test -w apps/web",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "aws:bootstrap": "curl -sf -X POST http://localhost:4566/moto-api/reset && cd infra/local && rm -f terraform.tfstate terraform.tfstate.backup && terraform init -input=false >/dev/null && terraform apply -input=false -auto-approve",
+    "dev:demo": "NEXT_PUBLIC_DEMO_MODE=true npm run dev -w apps/web",
+    "build:demo": "NEXT_PUBLIC_DEMO_MODE=true npm run build -w apps/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

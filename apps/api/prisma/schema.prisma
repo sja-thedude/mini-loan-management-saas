@@ -1,0 +1,182 @@
+// Multi-tenant design: every business table carries tenant_id.
+// Child rows reference parents with COMPOSITE foreign keys (tenant_id, id), so the
+// database itself refuses e.g. a loan in tenant A pointing at a customer in tenant B.
+// Row-level security policies are added in the migration SQL (Prisma has no RLS DSL).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OFFICER
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CLOSED
+}
+
+enum InstallmentStatus {
+  DUE
+  PAID
+}
+
+model Tenant {
+  id        String   @id @db.Uuid
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  users     User[]
+  customers Customer[]
+  loans     Loan[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  email        String
+  fullName     String   @map("full_name")
+  passwordHash String   @map("password_hash")
+  role         Role
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+model Customer {
+  id                   String   @id @default(uuid()) @db.Uuid
+  tenantId             String   @map("tenant_id") @db.Uuid
+  fullName             String   @map("full_name")
+  email                String
+  phone                String?
+  monthlyIncomeCents   BigInt   @map("monthly_income_cents")
+  // Fictional national ID, encrypted with KMS (encryption context binds it to the tenant).
+  // Only the ciphertext and last 4 digits are stored; plaintext never touches the database.
+  nationalIdCiphertext String?  @map("national_id_ciphertext")
+  nationalIdLast4      String?  @map("national_id_last4") @db.VarChar(4)
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  loans  Loan[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, email])
+  @@map("customers")
+}
+
+model Loan {
+  id             String     @id @default(uuid()) @db.Uuid
+  tenantId       String     @map("tenant_id") @db.Uuid
+  customerId     String     @map("customer_id") @db.Uuid
+  principalCents BigInt     @map("principal_cents")
+  annualRateBps  Int        @map("annual_rate_bps") // 1250 = 12.50%
+  termMonths     Int        @map("term_months")
+  purpose        String
+  status         LoanStatus @default(PENDING)
+  createdById    String     @map("created_by_id") @db.Uuid
+  decidedById    String?    @map("decided_by_id") @db.Uuid
+  decidedAt      DateTime?  @map("decided_at")
+  decisionNote   String?    @map("decision_note")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer      @relation(fields: [tenantId, customerId], references: [tenantId, id])
+  installments Installment[]
+  documents    Document[]
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("loans")
+}
+
+model Installment {
+  id             String            @id @default(uuid()) @db.Uuid
+  tenantId       String            @map("tenant_id") @db.Uuid
+  loanId         String            @map("loan_id") @db.Uuid
+  number         Int
+  dueDate        DateTime          @map("due_date") @db.Date
+  principalCents BigInt            @map("principal_cents")
+  interestCents  BigInt            @map("interest_cents")
+  totalCents     BigInt            @map("total_cents")
+  status         InstallmentStatus @default(DUE)
+  paidAt         DateTime?         @map("paid_at")
+
+  loan Loan @relation(fields: [tenantId, loanId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([loanId, number])
+  @@map("installments")
+}
+
+model Document {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  loanId       String   @map("loan_id") @db.Uuid
+  s3Key        String   @map("s3_key")
+  fileName     String   @map("file_name")
+  contentType  String   @map("content_type")
+  uploadedById String   @map("uploaded_by_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  loan Loan @relation(fields: [tenantId, loanId], references: [tenantId, id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+// Transactional outbox: domain events are inserted in the SAME transaction as the state change,
+// then relayed to EventBridge by a background publisher. No "DB committed but event lost" gap.
+// System table: read by the publisher across tenants, never exposed through the API.
+model OutboxEvent {
+  id          String    @id @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  type        String
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at")
+  publishedAt DateTime? @map("published_at")
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error")
+
+  @@map("outbox_events")
+}
+
+// Idempotency keys for money-moving POSTs: a retried request replays the original response
+// instead of creating a second loan or recording a payment twice.
+model IdempotencyKey {
+  tenantId       String   @map("tenant_id") @db.Uuid
+  key            String   @db.VarChar(100)
+  requestHash    String   @map("request_hash") @db.VarChar(64)
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@id([tenantId, key])
+  @@map("idempotency_keys")
+}

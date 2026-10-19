@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.next/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store
+infra/**/.terraform/
+infra/**/*.tfstate*
+infra/**/*.tfvars
+!infra/*.tfvars.example
+infra/.build/
+out/
+.wrangler/

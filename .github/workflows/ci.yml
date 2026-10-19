@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_ci_only
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 3s --health-retries 20
+      aws:
+        # Local AWS emulator: S3, SQS, SNS, SES, EventBridge, KMS, SSM, Secrets Manager, DynamoDB, CloudWatch
+        image: motoserver/moto:5.1.22
+        ports: ["4566:5000"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.6
+          terraform_wrapper: false
+      - name: Create non-superuser app role (same as docker/init-db.sql)
+        run: PGPASSWORD=postgres_ci_only psql -h localhost -p 5433 -U postgres -f docker/init-db.sql
+      - run: npm ci
+      - name: Terraform format + validate (all roots)
+        run: |
+          terraform fmt -check -recursive infra
+          for d in infra infra/local infra/static-site; do (cd $d && terraform init -backend=false -input=false >/dev/null && terraform validate); done
+      - name: Provision AWS resources in the emulator (same module as production)
+        run: npm run aws:bootstrap
+      - name: Typecheck
+        run: |
+          npx tsc --noEmit -p apps/api
+          npx tsc --noEmit -p apps/worker
+          npx tsc --noEmit -p apps/web
+      - name: Tests (API + AWS integration, worker, demo)
+        run: npm test
+      - run: npm run build -w apps/worker
+      - run: npm run build:demo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-site
+          path: apps/web/out
+          retention-days: 7
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build images for linux/arm64 (Fargate Graviton)
+        run: |
+          docker buildx build --platform linux/arm64 -f apps/api/Dockerfile .
+          docker buildx build --platform linux/arm64 -f apps/web/Dockerfile .
