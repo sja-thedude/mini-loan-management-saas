@@ -47,6 +47,12 @@ just as importantly, what a real lending platform would still need.
   (`scripts/validate-iam-policies.sh`: 0 findings).
 - Queue policy allows `events.amazonaws.com` only from the specific rule ARN (confused-deputy protection).
 
+### Audit & operations (deployed)
+- **CloudTrail** trail with log file integrity validation → encrypted, TLS-only S3 bucket (90-day lifecycle).
+- **ECS Exec** through SSM Session Manager instead of SSH (no inbound ports, sessions audited).
+- Least-privilege fix found in production: the worker lacked `dynamodb:UpdateItem`. Claim leases now prevent a
+  failed status update from silently dropping an event.
+
 ### Input & errors
 - Zod validation on every body, query and path parameter. JSON body limit 100 KB.
 - Errors return JSON without stack traces. Internals are logged server-side with a request id.

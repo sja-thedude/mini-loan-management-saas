@@ -1,85 +1,71 @@
 # AWS Services Inventory
 
-What was **actually used**, how, and at what cost. Every claim here was checked on
-2026-10-19. "Tested" means an automated test or a command whose output was verified.
+Every AWS service in this project: where it runs, how it was verified, and what it costs.
+Last verified: **2026-10-20**, region **eu-north-1 (Stockholm)**.
 
-## Constraints discovered
+## Account facts
 
 | Fact | How verified |
 |---|---|
-| My account is on the AWS **Free plan**, ACTIVE, **$100 credits**, expires 2027-04-19 | `aws freetier get-account-plan-state` |
-| The Free plan **cannot charge the card**: usage draws down credits; when they run out the account is paused, not billed | AWS Free plan terms (third-party summaries agree); plan type from the API above |
-| The account sits in an AWS-managed Organization (`o-bek9fg6c12`) whose **SCPs explicitly deny** most services | `aws organizations describe-organization` + explicit-deny errors naming the SCP ARNs |
-| Allowed: IAM roles, CloudWatch Logs groups, CloudFront config objects, read-only S3/CloudFront/Route 53/ACM/WAF listing, Budgets, CloudTrail event history, IAM Access Analyzer | Create/list probes (cleaned up afterwards) |
-| Denied: S3 `CreateBucket`, EC2/VPC, ECS, ECR, RDS, Lambda, API Gateway, DynamoDB, SQS, SNS, KMS, SSM, Secrets Manager, Cognito, CloudFormation, App Runner, Amplify, Aurora DSQL, CloudWatch alarms/dashboards/metrics, IAM OIDC providers | Same probes |
-| LocalStack's free community image was retired on 2026-03-23; newer images need an account token | LocalStack/GitHub announcements. **moto** (Apache-2.0, no account) used instead |
+| New-style AWS "project" account, upgraded to the **paid plan** with a **$20/month hard spend limit** and 3 early cost controls (stop new launches, pause idle, pause top cost drivers) | Billing console |
+| $120 credits pay for usage first | Billing console / `aws freetier get-account-plan-state` |
+| **Single-Region account:** only `eu-north-1` is enabled. Other Regions are denied by an Organizations SCP | Explicit-deny errors in `us-east-1`; same calls succeed in `eu-north-1` (CloudShell + CLI) |
+| External identity providers (IAM OIDC) are denied by a second SCP | `iam:CreateOpenIDConnectProvider` → explicit deny |
+| AWS Budget: $5/month, alerts at 50/80/100% actual + 100% forecast | Terraform `infra/budget.tf` |
 
-## Tier 1: Real AWS ($0, used and verified)
+## Deployed on AWS and verified ✅
 
-| Service | What we did | Cost |
+| Service | What it does here | Verified by |
 |---|---|---|
-| **AWS Budgets** | $10/month cost budget; email alerts at 50/80/100% actual and 100% forecast (Terraform: `infra/budget.tf`) | Free (budgets have no charge; action-enabled budgets beyond 2 do) |
-| **IAM / STS** | `aws login` → temporary role credentials (no access keys on disk); `sts get-caller-identity` | Free |
-| **IAM Access Analyzer** | `scripts/validate-iam-policies.sh` validates the API and worker policies: **0 findings**. An intentionally bad policy is flagged `PASS_ROLE_WITH_STAR_IN_RESOURCE` | Free (policy validation) |
-| **AWS CloudTrail (Event history)** | `aws cloudtrail lookup-events` shows our own management events (e.g. CloudFront deletes) | Free (90-day management-event history) |
-| **AWS Organizations (read) / SCPs** | Diagnosed the guardrail blocking deployment from explicit-deny errors | Free |
-| **Free Tier API** | Read plan type, credits and expiry | Free |
-| **CloudFront** | Created then destroyed a CloudFront Function, Origin Access Control and response-headers policy. A distribution was not possible because the SCP blocks the S3 origin bucket | Free (config objects) |
+| **VPC** | 10.0.0.0/16, 2 public + 2 private subnets in 2 AZs, IGW, route tables; **no NAT** (cost) | Terraform apply; app reachable; DB unreachable from the internet |
+| **Security groups** | App SG: port 3001 from one /32 only. DB SG: 5432 only from the app SG | Requests from the allowed IP work |
+| **ECS Fargate (ARM64/Graviton)** | One task, two containers (Next.js + API) sharing `localhost`; circuit breaker with rollback; **ECS Exec** enabled | `scripts/app.sh start` → healthy; Exec agent RUNNING |
+| **ECR** | Private repos for api/web images, scan on push, lifecycle (keep 5) | Images pushed from laptop (arm64) |
+| **Aurora Serverless v2 PostgreSQL 16.9** | **Scales to 0 ACU** after 5 idle minutes; private subnets, encrypted, RDS-managed master secret | One-off bootstrap task created `loan_app` with `rolsuper=false, rolbypassrls=false`; migrations applied; demo data seeded |
+| **ECS one-off tasks** | DB role bootstrap (only task with master creds) and seeding | Exit code 0, logs in CloudWatch |
+| **KMS** (customer-managed key, rotation on) | Field-level PII encryption with a tenant encryption context; SSE-KMS for S3, SNS, DynamoDB, Secrets Manager | National ID stored as ciphertext, masked in API; admin reveal decrypts; S3 object `ServerSideEncryption=aws:kms` |
+| **S3** | Loan documents: presigned POST (size/type enforced) + presigned GET, tenant-prefixed keys, Block Public Access | Upload 204 and download via presigned URLs from the live app |
+| **EventBridge** | Custom bus + rule routing `loan-app.api` events to SQS | Approval in the live app → event delivered |
+| **SQS** | Event queue + DLQ (maxReceiveCount 5), queue policy scoped to the rule; ops-alert inbox | Messages consumed; DLQ depth 0 |
+| **Lambda** (Node 22, ARM64) | Notification worker on an SQS event-source mapping, partial batch failures, max concurrency 2, **X-Ray tracing** | Records reach `DONE`; X-Ray trace recorded |
+| **DynamoDB** | Idempotent notification log (tenant partition, conditional claim + lease), TTL, PITR, SSE-KMS | Items with status `DONE` and SES message IDs |
+| **SES** | Approval/rejection emails from a verified sender (sandbox → AWS mailbox simulator) | Real SES MessageId in DynamoDB |
+| **SNS** | Ops alerts for loans ≥ $50,000 (KMS-encrypted topic) → SQS subscription; CloudWatch alarm actions | Alert message received for a $75,000 approval |
+| **Secrets Manager** | JWT signing key (loaded at API start); Aurora master password (RDS-managed) | API issues sessions; bootstrap task reads the master secret |
+| **SSM Parameter Store** | App DB password (SecureString, injected by ECS), high-value threshold, SES sender | Containers start; threshold drives the SNS alert |
+| **IAM** | Execution role, API task role, worker role, scheduler role; least-privilege, resource-scoped | Real AWS caught a missing `dynamodb:UpdateItem` → fixed; Access Analyzer: 0 findings |
+| **CloudWatch Logs** | ECS (`/ecs/loan-app`) and Lambda (`/loan-app/prod/worker`, JSON format), 7-day retention | Logs tailed during verification |
+| **CloudWatch Metrics/Alarms/Dashboards** | `LoanApp/LoanDecisions`, log metric filter `Api5xx`; alarms: worker errors, queue age, API 5xx, DLQ not empty → SNS; operations dashboard; 3 saved Logs Insights queries | Metric present; alarms + dashboard created |
+| **AWS X-Ray** | Active tracing on the worker Lambda | Trace summary returned |
+| **EventBridge Scheduler** | Nightly `ecs:UpdateService desiredCount=0` (cost guardrail) | Schedule created |
+| **CloudTrail** | Trail to an encrypted S3 bucket with **log file integrity validation**, 90-day lifecycle | `IsLogging: true` |
+| **Cognito** | User pool (immutable `custom:tenant_id`, optional TOTP MFA, password policy), web client, ADMIN/OFFICER groups | Pool created. **Not yet wired into the app's login** |
+| **CloudFront + S3 (static site)** | Always-on demo: private bucket with **Origin Access Control**, CloudFront Function URL rewrites, security-headers policy, HTTPS redirect | All routes 200, direct S3 access 403, HTTP → HTTPS 301 |
+| **AWS Budgets** | $5 budget with email alerts | In place |
+| **IAM Access Analyzer** | `scripts/validate-iam-policies.sh` | 0 findings |
 
-Nothing billable exists in the account. Only the budget remains.
-
-## Tier 2: Emulated locally (moto in Docker) and covered by automated tests
-
-Provisioned by `infra/local` → `infra/modules/app-services`, the **same Terraform module** the
-production design uses. Tested by `apps/api/test/aws.test.ts` (9 tests) and
-`apps/worker/test/handler.test.ts` (5 tests), plus a live end-to-end run.
-
-| Service | How the app uses it | Verified by |
-|---|---|---|
-| **S3** | Loan documents: presigned **POST** (size + content-type enforced), presigned GET (60 s), tenant-prefixed keys, Block Public Access, CORS, lifecycle | Upload via presigned POST then download; cross-tenant download → 404 |
-| **KMS** | Customer-managed key with rotation; **field-level encryption** of national IDs with an encryption context of `{tenantId, field}`; SSE-KMS on S3, SNS, DynamoDB, Secrets Manager | Ciphertext stored, plaintext never stored; **decrypt with another tenant's context fails** (`InvalidCiphertextException`); S3 object shows `aws:kms` |
-| **EventBridge** | Custom bus `loan-app-<env>-events`; rule on `source=loan-app.api` with five detail-types; SQS target | E2E: approval → event on the queue |
-| **SQS** | Event queue with **DLQ redrive** (maxReceiveCount 5), long polling, SSE, queue policy scoped to the rule ARN | Partial-batch failure then retry. The DLQ move itself is configured but **not** exercised by a test |
-| **SNS** | Ops-alert topic for loans ≥ threshold, with a raw-delivery SQS subscription | Alert received on the subscribed queue |
-| **SES** | Approval/rejection emails from a verified sender | Send count increases; an unverified sender is rejected → retry path |
-| **DynamoDB** | Idempotent notification log (`tenantId` + `eventId`), conditional writes, TTL, PITR, SSE-KMS | Redelivered event → no second email |
-| **SSM Parameter Store** | Non-secret config (high-value threshold, sender) read at startup / Lambda cold start | Threshold from SSM drives the SNS alert |
-| **Secrets Manager** | JWT signing key loaded at API startup (`JWT_SECRET_ID`) | Live run: API logs in with the key from Secrets Manager |
-| **CloudWatch Logs** | Worker ships JSON logs to `/loan-app/local/worker` | Live run: 5 events in the log group |
-| **CloudWatch Metrics** | `LoanApp/LoanDecisions{Decision}` via PutMetricData (fire-and-forget) | Live run: datapoint present |
-| **IAM** | Least-privilege roles and policies for the API and worker (the emulator doesn't enforce them, but they're validated on real AWS by Access Analyzer) | Access Analyzer: 0 findings |
-| **Lambda (handler code)** | `apps/worker/src/handler.ts` is a real `SQSEvent → SQSBatchResponse` handler; a local runner mimics the event-source mapping | Handler unit/integration tests. **The real Lambda runtime was not executed** |
-
-Local stand-ins: **PostgreSQL 16 in Docker** for RDS; **Docker images** (linux/arm64) built and
-run as a simulated ECS task (two containers sharing `localhost`).
-
-## Tier 3: Infrastructure as code only (`terraform validate` passes, never applied)
-
-| Service | Where | Why not deployed |
-|---|---|---|
-| VPC, subnets, IGW, route tables, security groups | `infra/network.tf` | SCP denies EC2/VPC |
-| RDS PostgreSQL (private, encrypted, managed master secret) | `infra/database.tf` | SCP denies RDS |
-| ECS Fargate (cluster, task defs, service, circuit breaker), ECR | `infra/ecs.tf` | SCP denies ECS/ECR |
-| Lambda function + SQS event-source mapping + DLQ alarm | `infra/lambda.tf` | SCP denies Lambda |
-| Cognito user pool (immutable `custom:tenant_id`, MFA, groups) | `infra/cognito.tf` | SCP denies Cognito; also not wired into the app |
-| S3 + CloudFront (OAC, function, headers) + GitHub OIDC + dashboard/alarms | `infra/static-site/` | SCP denies S3 buckets and OIDC providers |
-
-## Not used, and why
+## Not deployed, and why
 
 | Service | Reason |
 |---|---|
-| API Gateway | The API runs as a container behind Next.js. API Gateway would front Lambda-based APIs, which this design doesn't need. Blocked by the SCP anyway |
-| EC2 | Fargate chosen (no servers to patch). Blocked |
-| Route 53 / ACM | A hosted zone costs $0.50/month; ACM needs an owned domain |
-| WAF | $5/month per web ACL + $1/rule |
-| Cost Explorer API | $0.01 per request; also "not enabled" on this account |
-| CloudFormation | Terraform chosen; blocked by the SCP |
-| Step Functions, App Runner, Amplify | Not needed / blocked |
+| GitHub Actions → AWS via OIDC | Account SCP denies creating OIDC identity providers. Terraform kept behind `enable_github_oidc` |
+| ALB + ACM + Route 53 | ~$18/month (ALB) + $0.50/zone; the budget is $5. CloudFront serves HTTPS for the static site |
+| NAT Gateway / VPC endpoints | ~$33/month / ~$7 per endpoint. Fargate uses a public IP instead |
+| WAF, GuardDuty, AWS Config, Security Hub | Ongoing charges beyond the $5 budget |
+| Multi-Region / DR | Account is single-Region |
 
-## Where the app is hosted
+## Costs (estimates from list prices; check Billing for actuals)
 
-| Environment | Where | Cost |
-|---|---|---|
-| Public demo | **Cloudflare Pages**: https://mini-loan-saas-demo.pages.dev (static export + in-browser mock API) | $0 (Pages free plan) |
-| Full stack | Your laptop: Docker (Postgres + moto) + API + web + worker | $0 |
-| Production design | AWS (Terraform in `infra/`) | ~$35/month if deployed; not deployed |
+| Item | Cost |
+|---|---|
+| Always on: KMS key $1, 2 Secrets Manager secrets $0.80, Aurora storage < 1 GB ~$0.10, ECR ~0.3 GB ~$0.03 | **≈ $2/month** |
+| While the app runs: Aurora ~0.5 ACU, Fargate 0.5 vCPU/1 GB ARM, public IPv4 | **≈ $0.09/hour** |
+| Lambda, SQS, SNS, EventBridge, DynamoDB, SES, CloudWatch (within free allowances), X-Ray, CloudTrail (first trail), CloudFront | ≈ $0 |
+
+Guardrails: $20 hard spend limit, $5 budget alerts, nightly auto-stop, Aurora auto-pause, `scripts/app.sh stop`.
+
+## Local equivalents (development and CI)
+
+- moto (Apache-2.0 AWS emulator) on `:4566`, provisioned by `infra/local` with the **same** Terraform module.
+- PostgreSQL 16 in Docker. 48 automated tests, including 15 against the emulator.
+- Public mirror of the static demo on Cloudflare Pages: https://mini-loan-saas-demo.pages.dev
