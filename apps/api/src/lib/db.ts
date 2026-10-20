@@ -3,7 +3,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 // On AWS, ECS injects DB_PASSWORD from Secrets Manager; the URL is assembled in memory.
 if (!process.env.DATABASE_URL && process.env.DB_HOST) {
   const { DB_HOST, DB_USER = "loan_app", DB_PASSWORD = "", DB_NAME = "loans" } = process.env;
-  process.env.DATABASE_URL = `postgresql://${DB_USER}:${encodeURIComponent(DB_PASSWORD)}@${DB_HOST}:5432/${DB_NAME}?sslmode=require`;
+  process.env.DATABASE_URL = `postgresql://${DB_USER}:${encodeURIComponent(DB_PASSWORD)}@${DB_HOST}:5432/${DB_NAME}?sslmode=require&connect_timeout=30`; // Aurora may need ~15s to resume from zero
 }
 
 export const prisma = new PrismaClient();

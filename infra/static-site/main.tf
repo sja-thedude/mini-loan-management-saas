@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-1" # CloudFront metrics, ACM-for-CloudFront and the Functions control plane live here
+  region = "eu-north-1" # single-Region project; CloudFront itself is global
   default_tags {
     tags = { Project = "mini-loan-saas", Environment = "demo", ManagedBy = "terraform" }
   }

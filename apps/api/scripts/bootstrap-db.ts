@@ -13,7 +13,7 @@ async function main() {
   if (!/^[A-Za-z0-9]{24,}$/.test(DB_PASSWORD)) throw new Error("DB_PASSWORD must be alphanumeric, 24+ chars");
 
   const enc = encodeURIComponent;
-  const admin = new PrismaClient({ datasourceUrl: `postgresql://${enc(DB_MASTER_USER)}:${enc(DB_MASTER_PASSWORD)}@${DB_HOST}:5432/postgres?sslmode=require` });
+  const admin = new PrismaClient({ datasourceUrl: `postgresql://${enc(DB_MASTER_USER)}:${enc(DB_MASTER_PASSWORD)}@${DB_HOST}:5432/postgres?sslmode=require&connect_timeout=30` });
   try {
     const [{ n }] = await admin.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_roles WHERE rolname = 'loan_app'`;
     const verb = n ? "ALTER" : "CREATE";

@@ -1,18 +1,14 @@
-# Generated here, stored in Secrets Manager, injected into containers by ECS at start.
-# Never in the image, the repo, or the task definition in plain text.
+# The app's DB password: generated here, stored as an SSM SecureString (Standard tier = free,
+# encrypted with the AWS-managed aws/ssm key), injected into the container by ECS at start.
+# Secrets Manager (~$0.40/secret/month) is used where rotation matters: the Aurora master
+# password (managed by RDS) and the JWT signing key (in the app-services module).
 resource "random_password" "db_app" {
   length  = 32
   special = false # used in a connection URL and in DDL; alphanumeric avoids escaping
 }
 
-resource "aws_secretsmanager_secret" "app" {
-  name                    = "${local.name}/app"
-  recovery_window_in_days = 0 # learning project: allow immediate delete on destroy
-}
-
-resource "aws_secretsmanager_secret_version" "app" {
-  secret_id = aws_secretsmanager_secret.app.id
-  secret_string = jsonencode({
-    DB_PASSWORD = random_password.db_app.result
-  })
+resource "aws_ssm_parameter" "db_app_password" {
+  name  = "/${local.name}/prod/db-app-password"
+  type  = "SecureString"
+  value = random_password.db_app.result
 }

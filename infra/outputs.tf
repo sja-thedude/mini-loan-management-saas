@@ -10,4 +10,4 @@ output "documents_bucket" { value = module.app.documents_bucket }
 output "cognito_user_pool_id" { value = aws_cognito_user_pool.main.id }
 output "worker_function" { value = aws_lambda_function.worker.function_name }
 output "log_group" { value = aws_cloudwatch_log_group.app.name }
-output "db_endpoint" { value = aws_db_instance.main.address }
+output "db_endpoint" { value = aws_rds_cluster.main.endpoint }
