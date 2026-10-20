@@ -16,16 +16,17 @@ resource "aws_lambda_function" "worker" {
   source_code_hash = data.archive_file.worker.output_base64sha256
   memory_size      = 256
   timeout          = 30 # must stay below the queue's 60s visibility timeout
-  # Cap concurrency so a burst can't exhaust SES quotas or downstream limits.
-  reserved_concurrent_executions = 5
 
   environment {
     variables = {
       NOTIFICATIONS_TABLE = module.app.notifications_table
       OPS_TOPIC_ARN       = module.app.ops_topic_arn
       SSM_PREFIX          = module.app.ssm_prefix
+      SES_REDIRECT_TO     = "success@simulator.amazonses.com" # SES sandbox: AWS mailbox simulator
     }
   }
+
+  tracing_config { mode = "Active" } # X-Ray traces: SQS -> Lambda -> DynamoDB/SES/SNS
 
   logging_config {
     log_format = "JSON"
@@ -39,7 +40,7 @@ resource "aws_lambda_event_source_mapping" "worker" {
   batch_size                         = 10
   maximum_batching_window_in_seconds = 2
   function_response_types            = ["ReportBatchItemFailures"] # partial batch failures
-  scaling_config { maximum_concurrency = 5 }
+  scaling_config { maximum_concurrency = 2 }                       # cap parallelism (protects SES quota); no reserved concurrency needed
 }
 
 # Alarm on anything landing in the DLQ: those are events that failed 5 times.
@@ -55,4 +56,9 @@ resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
   comparison_operator = "GreaterThanThreshold"
   alarm_actions       = [module.app.ops_topic_arn]
   treat_missing_data  = "notBreaching"
+}
+
+resource "aws_iam_role_policy_attachment" "worker_xray" {
+  role       = module.app.worker_role_name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }

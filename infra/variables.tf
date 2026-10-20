@@ -1,6 +1,7 @@
 variable "region" {
-  type    = string
-  default = "us-east-1"
+  description = "The account is a single-Region project: only eu-north-1 (Stockholm) is enabled"
+  type        = string
+  default     = "eu-north-1"
 }
 
 variable "alert_email" {
@@ -10,7 +11,7 @@ variable "alert_email" {
 
 variable "monthly_budget_usd" {
   type    = number
-  default = 10
+  default = 5
 }
 
 variable "allowed_cidr" {
@@ -19,9 +20,21 @@ variable "allowed_cidr" {
 }
 
 variable "desired_count" {
-  description = "Number of running app tasks. Set to 0 to stop paying for Fargate compute."
+  description = "Initial number of app tasks (0 = not running, no compute cost). Changed at runtime by scripts/app.sh."
   type        = number
-  default     = 1
+  default     = 0
+}
+
+variable "aurora_engine_version" {
+  description = "Aurora PostgreSQL version; scale-to-zero needs 16.3+"
+  type        = string
+  default     = "16.9"
+}
+
+variable "auto_stop_cron" {
+  description = "When the nightly schedule scales the app to 0 (UTC). Default 20:00 UTC = 23:00 Riyadh."
+  type        = string
+  default     = "cron(0 20 * * ? *)"
 }
 
 variable "image_tag" {
@@ -32,7 +45,7 @@ variable "image_tag" {
 variable "app_origins" {
   description = "Browser origins of the web app (S3 CORS for direct document uploads)"
   type        = list(string)
-  default     = ["https://app.example.com"]
+  default     = ["*"] # demo task IP changes on every start; the presigned POST policy is what authorizes uploads
 }
 
 variable "notification_sender" {

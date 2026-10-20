@@ -61,6 +61,20 @@ resource "aws_sqs_queue" "ops_inbox" {
   name = "${local.prefix}-ops-alerts-inbox"
 }
 
+resource "aws_sqs_queue_policy" "ops_inbox" {
+  queue_url = aws_sqs_queue.ops_inbox.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "sns.amazonaws.com" }
+      Action    = "sqs:SendMessage"
+      Resource  = aws_sqs_queue.ops_inbox.arn
+      Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.ops_alerts.arn } }
+    }]
+  })
+}
+
 resource "aws_sns_topic_subscription" "ops_inbox" {
   topic_arn            = aws_sns_topic.ops_alerts.arn
   protocol             = "sqs"

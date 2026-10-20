@@ -54,7 +54,7 @@ resource "aws_ecs_task_definition" "app" {
       image     = local.ecr["api"]
       essential = true
       environment = [
-        { name = "DB_HOST", value = aws_db_instance.main.address },
+        { name = "DB_HOST", value = aws_rds_cluster.main.endpoint },
         { name = "AWS_REGION", value = var.region },
         { name = "S3_BUCKET", value = module.app.documents_bucket },
         { name = "KMS_KEY_ID", value = module.app.kms_key_arn },
@@ -65,14 +65,14 @@ resource "aws_ecs_task_definition" "app" {
         { name = "COOKIE_SECURE", value = "false" }, # no HTTPS without a load balancer/CloudFront
       ]
       secrets = [
-        { name = "DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:DB_PASSWORD::" },
+        { name = "DB_PASSWORD", valueFrom = aws_ssm_parameter.db_app_password.arn },
       ]
       healthCheck = {
         command     = ["CMD-SHELL", "wget -qO- http://localhost:4000/api/health || exit 1"]
         interval    = 15
         timeout     = 5
         retries     = 3
-        startPeriod = 30
+        startPeriod = 90 # first start may wait ~15s for Aurora to resume from zero
       }
       logConfiguration = merge(local.log, { options = merge(local.log.options, { "awslogs-stream-prefix" = "api" }) })
     },
@@ -104,18 +104,22 @@ resource "aws_ecs_task_definition" "db_bootstrap" {
     image       = local.ecr["api"]
     essential   = true
     command     = ["node", "dist/scripts/bootstrap-db.js"]
-    environment = [{ name = "DB_HOST", value = aws_db_instance.main.address }]
+    environment = [{ name = "DB_HOST", value = aws_rds_cluster.main.endpoint }]
     secrets = [
-      { name = "DB_MASTER_USER", valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:username::" },
-      { name = "DB_MASTER_PASSWORD", valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:password::" },
-      { name = "DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.app.arn}:DB_PASSWORD::" },
+      { name = "DB_MASTER_USER", valueFrom = "${aws_rds_cluster.main.master_user_secret[0].secret_arn}:username::" },
+      { name = "DB_MASTER_PASSWORD", valueFrom = "${aws_rds_cluster.main.master_user_secret[0].secret_arn}:password::" },
+      { name = "DB_PASSWORD", valueFrom = aws_ssm_parameter.db_app_password.arn },
     ]
     logConfiguration = merge(local.log, { options = merge(local.log.options, { "awslogs-stream-prefix" = "bootstrap" }) })
   }])
 }
 
-# BILLABLE: ~$14/mo while desired_count = 1 (0.5 vCPU / 1 GB ARM) + ~$3.60/mo public IPv4.
+# BILLABLE ONLY WHILE RUNNING: ~$0.02/h (0.5 vCPU / 1 GB ARM) + $0.005/h public IPv4.
+# Default desired_count = 0; start it for demos, and a nightly schedule (scheduler.tf) stops it.
 resource "aws_ecs_service" "app" {
+  lifecycle {
+    ignore_changes = [desired_count] # started/stopped by CLI + nightly schedule, not by Terraform
+  }
   name            = local.name
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
@@ -127,6 +131,8 @@ resource "aws_ecs_service" "app" {
     security_groups  = [aws_security_group.app.id]
     assign_public_ip = true # how the task reaches ECR/Secrets Manager without a NAT Gateway
   }
+
+  enable_execute_command = true # `aws ecs execute-command` via SSM Session Manager; no SSH or bastion
 
   deployment_circuit_breaker {
     enable   = true
