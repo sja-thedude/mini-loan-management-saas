@@ -66,7 +66,7 @@ data "aws_iam_policy_document" "worker" {
   }
   statement {
     sid       = "IdempotentNotificationLog"
-    actions   = ["dynamodb:PutItem", "dynamodb:Query"]
+    actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem", "dynamodb:Query"]
     resources = [aws_dynamodb_table.notifications.arn]
   }
   statement {

@@ -86,3 +86,22 @@ describe("notification worker (Lambda handler)", () => {
     expect(await status(ok)).toBe("DONE");
   });
 });
+
+describe("claim leases", () => {
+  it("retries (does not ack) while another invocation holds a fresh claim, and takes over a stale one", async () => {
+    const { PutItemCommand } = await import("@aws-sdk/client-dynamodb");
+    const d = approved("100000");
+    const claim = (receivedAt: string) =>
+      ddb.send(new PutItemCommand({
+        TableName: process.env.NOTIFICATIONS_TABLE,
+        Item: { tenantId: { S: d.tenantId }, eventId: { S: d.eventId }, status: { S: "PROCESSING" }, receivedAt: { S: receivedAt } },
+      }));
+    await claim(new Date().toISOString()); // fresh claim by "someone else"
+    const r = record("loan.approved", d);
+    expect((await handler({ Records: [r] })).batchItemFailures).toEqual([{ itemIdentifier: r.messageId }]);
+
+    await claim(new Date(Date.now() - 10 * 60 * 1000).toISOString()); // abandoned 10 minutes ago
+    expect((await handler({ Records: [r] })).batchItemFailures).toEqual([]);
+    expect(await status(d)).toBe("DONE");
+  });
+});

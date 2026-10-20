@@ -6,7 +6,7 @@
  * Failures are reported per message (ReportBatchItemFailures): only failed messages return
  * to the queue, and after maxReceiveCount attempts they move to the dead-letter queue.
  */
-import { ConditionalCheckFailedException, DynamoDBClient, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { ConditionalCheckFailedException, DynamoDBClient, GetItemCommand, PutItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
@@ -47,6 +47,8 @@ const money = (cents: string) => {
 };
 
 const TTL_DAYS = 90;
+/** A PROCESSING claim older than this is treated as abandoned (crashed invocation) and can be taken over. */
+const CLAIM_LEASE_MS = 2 * 60 * 1000;
 
 export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
   configPromise ??= loadConfig();
@@ -71,7 +73,8 @@ async function processRecord(record: SQSRecord, cfg: WorkerConfig) {
   const table = process.env.NOTIFICATIONS_TABLE!;
   const key = { tenantId: { S: tenantId }, eventId: { S: eventId } };
 
-  // 1. Claim. Succeeds for a new event, or to retry one that previously FAILED.
+  // 1. Claim. Succeeds for a new event, a previously FAILED one, or an abandoned (stale) claim.
+  const staleBefore = new Date(Date.now() - CLAIM_LEASE_MS).toISOString();
   try {
     await ddb.send(
       new PutItemCommand({
@@ -84,15 +87,20 @@ async function processRecord(record: SQSRecord, cfg: WorkerConfig) {
           receivedAt: { S: new Date().toISOString() },
           expiresAt: { N: String(Math.floor(Date.now() / 1000) + TTL_DAYS * 86400) },
         },
-        ConditionExpression: "attribute_not_exists(eventId) OR #s = :failed",
+        ConditionExpression: "attribute_not_exists(eventId) OR #s = :failed OR (#s = :processing AND receivedAt < :stale)",
         ExpressionAttributeNames: { "#s": "status" },
-        ExpressionAttributeValues: { ":failed": { S: "FAILED" } },
+        ExpressionAttributeValues: { ":failed": { S: "FAILED" }, ":processing": { S: "PROCESSING" }, ":stale": { S: staleBefore } },
       }),
     );
   } catch (err) {
     if (err instanceof ConditionalCheckFailedException) {
-      log("info", "duplicate_skipped", { eventId, type });
-      return; // already handled (or being handled): acknowledge without side effects
+      const current = await ddb.send(new GetItemCommand({ TableName: table, Key: key, ConsistentRead: true }));
+      if (current.Item?.status?.S === "DONE") {
+        log("info", "duplicate_skipped", { eventId, type });
+        return; // already handled: acknowledge without side effects
+      }
+      // Another invocation holds a fresh claim: fail this record so SQS retries after the lease.
+      throw new Error(`Event ${eventId} is being processed by another invocation`);
     }
     throw err;
   }
@@ -107,7 +115,9 @@ async function processRecord(record: SQSRecord, cfg: WorkerConfig) {
       const res = await ses.send(
         new SendEmailCommand({
           Source: cfg.sender,
-          Destination: { ToAddresses: [recipient.email] },
+          // SES sandbox only delivers to verified addresses; SES_REDIRECT_TO (e.g. the SES mailbox
+          // simulator) receives the mail instead of the fictional customer address.
+          Destination: { ToAddresses: [process.env.SES_REDIRECT_TO || recipient.email] },
           Message: {
             Subject: { Data: approved ? `Your loan of ${amount} is approved` : "Update on your loan application" },
             Body: {
