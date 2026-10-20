@@ -11,12 +11,12 @@
 
 | | Public demo | Local full stack | AWS production design |
 |---|---|---|---|
-| Hosting | Cloudflare Pages | Laptop (Docker) | ECS Fargate + Lambda |
+| Hosting | S3 + CloudFront (and Cloudflare Pages mirror) | Laptop (Docker) | ECS Fargate + Lambda, eu-north-1 |
 | API | In-browser mock (same rules) | Express API | Express API in Fargate |
-| Database | Browser localStorage | Postgres 16 (Docker) | RDS PostgreSQL |
+| Database | Browser localStorage | Postgres 16 (Docker) | Aurora Serverless v2 PostgreSQL (scale to zero) |
 | AWS services | — | moto emulator on :4566 | Real services |
-| IaC | — | `infra/local` → `modules/app-services` | `infra/` → `modules/app-services` |
-| Status | **Live** | **Running + tested** | **Validated, not applied** |
+| IaC | `infra/static-site` | `infra/local` → `modules/app-services` | `infra/` → `modules/app-services` |
+| Status | **Live** | **Running + tested** | **Deployed + verified (2026-10-20)** |
 
 ## Request path (synchronous)
 
@@ -69,10 +69,13 @@ Internet ─► (prod: CloudFront + WAF + ALB/ACM) ─► ECS Fargate task (ARM6
                                                  web :3001 ─localhost─► api :4000
                                                     │5432 (SG→SG)          │ HTTPS
  Private subnets (no internet route)               ▼                       ▼
-   RDS PostgreSQL (encrypted, private)      KMS · S3 · EventBridge · SQS · SNS · SES
+   Aurora Serverless v2 (0–1 ACU, private)  KMS · S3 · EventBridge · SQS · SNS · SES
                                             DynamoDB · SSM · Secrets Manager · CloudWatch
- Lambda worker ◄── SQS event-source mapping (partial batch failures)
- Cognito user pool (template; future auth)
+ Lambda worker (X-Ray) ◄── SQS event-source mapping (partial batch failures)
+ Observability: dashboard, alarms → SNS, Logs Insights queries, CloudTrail (log validation)
+ Cost guardrails: EventBridge Scheduler nightly stop, $5 budget, $20 hard spend limit
+ Cognito user pool (deployed; app migration path)
+ Static demo: CloudFront (OAC, Function, security headers) → private S3
  * cost trade-off: no NAT Gateway / ALB in the learning design. See "Production hardening".
 ```
 

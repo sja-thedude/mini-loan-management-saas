@@ -2,163 +2,139 @@
 
 Role: Senior Full-Stack AWS Engineer / Technical Lead.
 
-## 1. What I actually did (say exactly this, no more)
+## 1. What I actually built and deployed (all verified 2026-10-20)
 
-| Area | Status | Evidence |
-|---|---|---|
-| Multi-tenant loan app (Next.js, Express/TS, Prisma, Postgres) | ✅ Built, running | 47 automated tests pass |
-| Tenant isolation: JWT scope + Postgres RLS + composite FKs | ✅ Tested | "Unfiltered query still returns only own tenant", "no tenant set → 0 rows" |
-| Exact money math (BigInt cents, amortization) | ✅ Tested | Textbook 10k @ 12% / 12 → 888.49; schedules sum exactly |
-| Idempotency keys on loan creation + payments | ✅ Tested | Retry → same loan; retried payment recorded once |
-| Transactional outbox → EventBridge → SQS → Lambda-style worker → SES/SNS/DynamoDB | ✅ Tested **on a local AWS emulator** | E2E test + live run |
-| KMS field-level encryption with tenant encryption context | ✅ Tested **on the emulator** | Wrong-tenant decrypt → `InvalidCiphertextException` |
-| S3 presigned POST/GET with SSE-KMS | ✅ Tested **on the emulator** | Upload/download test |
-| Secrets Manager / SSM config, CloudWatch Logs + metrics | ✅ Verified **on the emulator** | Live run |
-| Terraform: one shared module for local + production | ✅ Applied to the emulator; production root **validated, not applied** | `terraform validate` in CI |
-| Real AWS: Budgets, Access Analyzer, CloudTrail, temporary-credential CLI login | ✅ Done on my real account at $0 | 0 Access Analyzer findings |
-| Real AWS deployment of ECS/RDS/Lambda | ❌ **Not done.** My Free-plan account's SCP blocks those services | Explicit-deny errors |
-| Public demo | ✅ Cloudflare Pages: https://mini-loan-saas-demo.pages.dev | Live |
-| CI/CD | ✅ CI green on GitHub: Postgres + AWS emulator services, Terraform fmt/validate, 47 tests, arm64 image builds. Pages auto-deploy workflow ready (needs `CLOUDFLARE_API_TOKEN`) | [CI run](https://github.com/sja-thedude/mini-loan-management-saas/actions/runs/39245653401) |
+| Area | Status |
+|---|---|
+| Multi-tenant loan SaaS (Next.js, Express/TypeScript, Prisma, PostgreSQL) | ✅ Built, 48 automated tests |
+| **Deployed on AWS (eu-north-1)** with Terraform: VPC, security groups, ECS Fargate (Graviton), ECR, Aurora Serverless v2 PostgreSQL, Lambda, SQS + DLQ, EventBridge, SNS, SES, DynamoDB, KMS, S3, Secrets Manager, SSM Parameter Store, CloudWatch (logs, metrics, alarms, dashboard, Logs Insights), X-Ray, CloudTrail, EventBridge Scheduler, Cognito user pool, CloudFront | ✅ ~86 resources, end-to-end checks passed |
+| Tenant isolation: JWT scope + Postgres RLS + composite FKs + KMS encryption context | ✅ Verified on AWS (cross-tenant → 404) |
+| Event-driven notifications: outbox → EventBridge → SQS → Lambda → SES/SNS/DynamoDB | ✅ Verified on AWS (real SES MessageId) |
+| Financial integrity: BigInt cents, race-safe transitions, idempotency keys | ✅ Verified on AWS |
+| Cost engineering: ≈ $2/month idle (Aurora scales to zero, Fargate on demand, nightly auto-stop, $5 budget, $20 hard limit) | ✅ |
+| CI: GitHub Actions with Postgres + AWS-emulator service containers, Terraform validate, arm64 builds | ✅ Green |
+| Cognito | Pool deployed; app still uses its own JWT auth (migration path documented) |
+| GitHub → AWS deploy via OIDC | ❌ My account's SCP blocks OIDC providers. I deploy from my laptop with temporary credentials |
 
-**If Faraz asks "have you deployed ECS/RDS in production?"** Answer: *"Not in a job yet, and I want
-to be precise about that. I built this project to close the gap. I designed and validated the
-Terraform for ECS, RDS and Lambda. My sandbox account's Organizations SCP blocked deploying them,
-so I ran the AWS-facing code against a local AWS emulator with integration tests, and used the
-real account for what it allowed: budgets, IAM Access Analyzer and CloudTrail."*
+**Honest framing if asked about years of AWS experience:** *"Most of my professional infrastructure
+has been Supabase, Cloudflare and Docker. To go deep on AWS I designed, deployed and operated this
+project end to end, including debugging the issues real AWS surfaced that an emulator didn't."*
+Then go straight into the specifics below. Depth beats claims.
 
 ## 2. Two-minute pitch
 
-> "I built a multi-tenant loan management SaaS to deepen my AWS skills: companies manage
-> customers, take applications, approve them, and track amortized repayments.
+> "I built a multi-tenant loan management SaaS and deployed it on AWS with Terraform.
 >
-> Three things I treated as non-negotiable for lending:
+> **Compute:** the Next.js front end and the Express API run as two containers in one Fargate task
+> on Graviton. A notification worker runs on Lambda.
 >
-> **Isolation.** The tenant comes only from the verified token. Postgres row-level security uses a
-> transaction-local tenant setting through a role that can't bypass RLS. Composite foreign keys stop
-> cross-tenant references. KMS encryption context binds encrypted PII to its tenant. There are tests
-> for each layer.
+> **Data:** Aurora Serverless v2 PostgreSQL in private subnets that **scales to zero** when idle. Row-level
+> security enforces tenant isolation through a role that can't bypass it. I created that role with a one-off
+> ECS task, so the app never holds master credentials.
 >
-> **Financial integrity.** Integer cents with BigInt amortization, conditional state transitions
-> so a loan can't be approved twice, and Stripe-style idempotency keys so a retried payment is
-> recorded once.
+> **Events:** every state change writes an outbox row in the same transaction. A publisher relays to
+> EventBridge, then SQS with a DLQ, then Lambda, which sends SES emails, raises SNS alerts for large loans, and
+> deduplicates on event id in DynamoDB with conditional writes and claim leases.
 >
-> **Reliable side effects.** Every state change writes an outbox row in the same transaction. A
-> publisher relays to EventBridge. A rule routes to SQS with a DLQ. A Lambda-style worker sends
-> SES email and SNS ops alerts, deduplicating on event id with a DynamoDB conditional write, and
-> reports partial batch failures.
+> **Security:** KMS encrypts PII with the tenant id as encryption context, so ciphertext can't be decrypted
+> under another tenant. Secrets come from Secrets Manager and Parameter Store, and IAM roles are scoped per
+> workload. CloudTrail runs with log file validation.
 >
-> Infrastructure is Terraform with one shared module that I apply to a local AWS emulator in dev and
-> CI and that the production root reuses with ECS Fargate, RDS, Lambda and Cognito. When my account's
-> SCP blocked deployment, I diagnosed it from the explicit-deny errors. That's the same guardrail
-> mechanism DataLendly would use across its accounts."
+> **Operations:** a CloudWatch dashboard, alarms to SNS, X-Ray, Logs Insights queries and ECS Exec.
+>
+> **Cost:** it idles at about $2 a month: Aurora pauses, Fargate runs only on demand with a nightly
+> auto-stop, there's a budget alert and a hard spend limit.
+>
+> Two things real AWS taught me that the emulator didn't. My account was single-Region, which I found by
+> reading the SCP denies. And my worker role was missing `dynamodb:UpdateItem`, which exposed a retry bug that I
+> fixed with claim leases."
 
 ## 3. Architecture decisions: what, why, alternative
 
-| Decision | Why | Alternative and when I'd pick it |
+| Decision | Why | Alternative and when |
 |---|---|---|
-| ECS Fargate for the API | Long-lived Node process keeps a DB pool; same Docker image locally | Lambda + API Gateway for spiky traffic (needs RDS Proxy); EKS only at platform scale |
-| Lambda for the worker | Event-driven, scales to zero, SQS mapping gives retries + partial failures | ECS worker service for long jobs (>15 min) or steady high throughput |
-| EventBridge → SQS (not straight to Lambda) | SQS buffers, retries and parks poison messages in a DLQ; rules enable fan-out | SNS → SQS fan-out; Kinesis/MSK for ordered high-volume streams |
-| Transactional outbox | Avoids dual-write bugs (DB commit OK, publish failed, or the reverse) | Postgres logical replication / Debezium CDC at scale |
-| DynamoDB for the notification log | Conditional writes = cheap idempotency; TTL; tenant partition key | A Postgres table (fine too). I used DynamoDB to show the pattern |
-| RDS PostgreSQL | Relational integrity, RLS, transactions for money | Aurora Serverless v2 for variable load; DynamoDB isn't a fit for a loan ledger |
-| KMS encryption context | Cryptographic tenant binding + CloudTrail audit of every decrypt | Envelope encryption (GenerateDataKey) for payloads > 4 KB |
-| Secrets Manager (secrets) vs SSM (config) | Rotation + audit for secrets; free Standard parameters for config | SSM SecureString for secrets when rotation isn't needed |
-| Presigned POST, not PUT | S3 enforces size range + content type | Upload through the API (simpler, but the API pays for bandwidth and memory) |
-| Shared Terraform module | Dev, CI and prod are provisioned from the same code | Terragrunt / workspaces per env; CDK if the team prefers TypeScript |
-| No NAT / ALB in the learning design | Saves ~$50/month | Production: ALB + ACM, private subnets + VPC endpoints |
+| ECS Fargate for API + web | Long-lived Node keeps a DB pool; same Docker image locally; no servers | Lambda + API Gateway for spiky traffic (+ RDS Proxy); EKS at platform scale |
+| Two containers, one task | Share `localhost`; one ENI/public IP; Next proxies `/api` | Separate services behind an ALB for independent scaling |
+| Aurora Serverless v2, min 0 ACU | Postgres + RLS, pays ~nothing when idle; ~15 s resume (30 s connect timeout) | RDS db.t4g.micro (cheaper while busy, ~$12/month always-on); provisioned Aurora for steady load |
+| Lambda worker on SQS | Scales to zero; partial batch failures; retries + DLQ | ECS worker for long jobs or steady high throughput |
+| EventBridge in front of SQS | Content routing; add consumers without touching the API | SNS fan-out; Kinesis/MSK for ordered high volume |
+| Transactional outbox | No dual-write gap between DB and bus | CDC (Debezium / logical replication) at scale |
+| DynamoDB idempotency + lease | Conditional writes = atomic claim; lease recovers crashed invocations | Postgres table with `SELECT … FOR UPDATE SKIP LOCKED` |
+| KMS encryption context | Cryptographic tenant binding; every decrypt in CloudTrail | Envelope encryption for > 4 KB payloads |
+| SSM SecureString vs Secrets Manager | Free for static config/passwords; Secrets Manager where rotation matters | All in Secrets Manager (simpler, $0.40/secret) |
+| Public subnet + public IP, no NAT | Saves ~$33/month NAT + ~$18 ALB | Production: ALB + ACM, private subnets, VPC endpoints |
+| One shared Terraform module | Emulator (dev/CI) and AWS use the same definitions | Terragrunt/workspaces; CDK for TypeScript-first teams |
 
-## 4. Questions Faraz may ask, with answers
+## 4. Questions Faraz may ask
 
-### Multi-tenancy
-1. **How do you guarantee tenant A never sees tenant B's data?** Four layers: tenant from JWT only;
-   RLS with FORCE through a NOBYPASSRLS role (fails closed); composite FKs; KMS context + S3 prefixes.
-   Tested, including an unfiltered query.
-2. **Why `set_config(…, true)` and not `SET`?** It's transaction-local, so it can't leak to the next
-   request on a pooled connection. It's also safe with PgBouncer in transaction mode.
-3. **Shared schema vs schema-per-tenant vs DB-per-tenant?** Shared is the cheapest and simplest to
-   migrate. DB-per-tenant is for regulated or large tenants that need separate backups, keys or data residency.
-4. **Why 404 instead of 403 for other tenants' records?** So the API never confirms the record exists.
+### AWS fundamentals
+1. **Execution role vs task role?** Execution role: ECS agent pulls the image, writes logs, injects secrets (mine
+   reads one SSM parameter and the Aurora secret). Task role: the app's own calls (S3 under `tenants/*`, one KMS
+   key, PutEvents on one bus, one secret, PutMetricData in one namespace).
+2. **How does the container get the DB password?** The task definition's `secrets` points at an SSM SecureString.
+   ECS fetches it at start with the execution role. The app builds the URL in memory. It's never in the image or repo.
+3. **Why can't the internet reach your database?** Private subnets have no IGW route, `publicly_accessible=false`,
+   and the DB SG only allows the app SG on 5432.
+4. **How does Fargate pull from ECR without a NAT gateway?** The task has a public IP in a public subnet. In
+   production I'd use private subnets plus VPC endpoints (ECR api/dkr, S3 gateway, Logs, Secrets Manager).
+5. **What's an SCP? How did it affect you?** An Organizations guardrail capping what any principal can do. My
+   account is a single-Region project: `us-east-1` calls failed with explicit denies, the same calls worked in
+   `eu-north-1`, so I moved the stack there. Another SCP blocks OIDC providers.
+6. **Aurora Serverless v2 scale-to-zero trade-offs?** ~15 s cold resume, so a longer connect timeout and an ECS
+   health-check `startPeriod`. Fine for a demo or back office, not for latency-critical paths. Set `min_capacity` ≥ 0.5 there.
 
-### Financial integrity
-5. **Why not floats?** 0.1 + 0.2 ≠ 0.3. I use BigInt cents, string transport (JSON loses precision
-   above 2^53), and explicit round-half-up. The last installment absorbs drift.
-6. **Two admins approve at once?** Conditional `UPDATE … WHERE status='PENDING'`. Exactly one gets
-   rows=1; the other gets 409.
-7. **Client times out and retries a payment?** The Idempotency-Key is inserted first (PK
-   tenant+key). A retry replays the stored response. A concurrent duplicate gets 409. A different body gets 422.
-8. **How do you avoid "loan approved but the email event was lost"?** Transactional outbox: the event row
-   commits with the approval. The publisher uses `FOR UPDATE SKIP LOCKED` so several API tasks can publish safely.
+### Multi-tenancy and data integrity
+7. **How is tenant A kept from B's data?** Tenant from the JWT only. RLS with `FORCE` through a
+   `NOSUPERUSER NOBYPASSRLS` role (verified on Aurora). Composite FKs. KMS context. S3 key prefixes. Tested.
+8. **Why `set_config(…, true)`?** Transaction-local, so it can't leak across pooled connections and it's PgBouncer-safe.
+9. **Double approval?** Conditional `UPDATE … WHERE status='PENDING'`: one wins, the other gets 409.
+10. **Retried payment?** Idempotency-Key inserted first (tenant+key PK). Retry replays the response, a concurrent
+    duplicate gets 409, and a different body gets 422.
+11. **Money?** BigInt cents, string transport, round-half-up, last installment absorbs drift. DB CHECK constraints.
 
-### Event-driven / AWS
-9. **At-least-once delivery: how do you prevent duplicate emails?** A DynamoDB conditional put on
-   `eventId` claims the event first. A duplicate fails the condition and is acknowledged with no side effects.
-   A FAILED status can be re-claimed.
-10. **What is `ReportBatchItemFailures`?** Lambda returns only the failed message IDs, so successful
-    messages in the batch aren't retried. After maxReceiveCount the failed one moves to the DLQ, and an alarm fires.
-11. **Why must the visibility timeout exceed the Lambda timeout?** Otherwise SQS redelivers a message while
-    it's still being processed.
-12. **EventBridge vs SNS vs SQS?** EventBridge: content-based routing, many targets, schema/archive.
-    SNS: fan-out pub/sub. SQS: a durable buffer with retries for one consumer group.
-13. **Lambda vs Fargate for the API?** Fargate: steady traffic, connection pools, no cold starts.
-    Lambda: bursty or event work; for APIs on RDS add RDS Proxy.
+### Event-driven
+12. **At-least-once: how do you avoid duplicate emails?** DynamoDB conditional claim per `eventId`. DONE means
+    acknowledge and skip. A fresh PROCESSING claim means fail the record so SQS retries after the lease. A stale
+    claim older than 2 minutes gets taken over.
+13. **What bug did you find in production?** The worker role lacked `dynamodb:UpdateItem`. The emulator doesn't
+    enforce IAM, so the tests passed. On AWS the status update failed, retries treated the event as a
+    duplicate, and records stuck at PROCESSING. I fixed IAM, added the lease logic, added a test, and redeployed.
+14. **ReportBatchItemFailures?** Return only the failed message IDs. Others aren't retried. After
+    maxReceiveCount the failed one goes to the DLQ, which has an alarm.
+15. **Visibility timeout vs Lambda timeout?** Visibility (60 s) must exceed the Lambda timeout (30 s), or messages are redelivered mid-flight.
 
-### Security
-14. **Execution role vs task role?** Execution: ECS agent (pull image, logs, inject secrets).
-    Task: the app's own AWS calls.
-15. **How do containers get secrets?** The ECS `secrets` field injects the DB password from Secrets
-    Manager at start. The app fetches the JWT key with its task role. Nothing is in the image or repo.
-16. **What does KMS encryption context add?** It's authenticated data. A ciphertext moved to another
-    tenant's row can't be decrypted, and the context appears in CloudTrail for every Decrypt.
-17. **How do you check IAM least privilege?** IAM Access Analyzer `ValidatePolicy` in a script
-    (0 findings). Resource-scoped ARNs. Condition keys where there are no resource ARNs
-    (`cloudwatch:namespace`, `ses:FromAddress`).
-18. **What's an SCP and how did it affect you?** An Organizations guardrail that caps what *any*
-    principal in an account can do, even admins. My Free-plan account's SCP denied ECS/RDS/S3
-    creation, so I pivoted to an emulator plus validated IaC.
-19. **How would GitHub Actions deploy to AWS without keys?** An OIDC provider plus a role whose trust
-    policy pins `aud=sts.amazonaws.com` and `sub=repo:<org>/<repo>:ref:refs/heads/main`. Terraform is in `infra/static-site`.
-
-### Operations / cost / leadership
-20. **How do you monitor it?** Structured JSON logs (CloudWatch Logs Insights), business metric
-    `LoanDecisions`, DLQ-depth alarm, CloudFront/ECS metrics, a budget alert.
-21. **How do you control AWS cost?** Budgets with forecast alerts, Graviton, no idle NAT/ALB in dev,
-    log retention, ECR lifecycle rules, PAY_PER_REQUEST DynamoDB, S3 Bucket Keys (fewer KMS calls),
-    low-cardinality metric dimensions.
-22. **How would you deploy with zero downtime?** ECS rolling deploy with a circuit breaker and rollback.
-    Expand/contract migrations run as a one-off task before the service update.
-23. **As a tech lead, how would you roll this out to a team?**
-    - Shared Terraform modules and CI checks (fmt, validate, tests against an emulator).
-    - Separate AWS accounts per environment.
-    - ADRs for decisions like outbox vs CDC.
-    - Runbooks for DLQ redrive.
+### Operations, cost, leadership
+16. **How do you monitor it?** Operations dashboard (business metric, Lambda, SQS age/DLQ, ECS, Aurora ACU, API 5xx
+    table). Alarms → SNS. Log metric filter for API 5xx. Saved Logs Insights queries. X-Ray on the worker. CloudTrail.
+17. **How do you debug a running container?** ECS Exec (SSM Session Manager, audited, no SSH).
+18. **How do you keep cost under $5?** Aurora pause, on-demand Fargate plus a nightly Scheduler stop, Graviton,
+    PAY_PER_REQUEST DynamoDB, 7-day log retention, ECR lifecycle, S3 Bucket Keys, SSM over Secrets Manager
+    where rotation isn't needed, no NAT/ALB. Guarded by a budget and a hard spend limit.
+19. **Zero-downtime deploys?** ECS rolling deploy with circuit-breaker rollback. Expand/contract migrations run as a
+    one-off task before the service update.
+20. **Rolling this out to a team?**
+    - Multi-account (dev/stage/prod) with SCP guardrails.
+    - Shared Terraform modules and CI with emulator tests.
+    - OIDC deploy roles.
+    - ADRs, plus runbooks (DLQ redrive, Aurora resume).
 
 ### Questions to ask Faraz
-- How is DataLendly's AWS organized (accounts per env, SCPs, landing zone)?
-- Which compute dominates today, ECS or Lambda, and what's driving changes?
-- How do you handle tenant isolation and data residency for lenders?
-- What does the on-call / incident process look like for payment-affecting issues?
+- How is DataLendly's AWS organized (accounts, SCPs, landing zone)?
+- ECS vs Lambda today, and what's driving changes?
+- How do you handle tenant isolation and data residency for lender clients?
+- What does on-call look like for payment-affecting incidents?
 
-## 5. Challenges I actually hit (good stories)
+## 5. Demo script (5 minutes)
 
-1. **Superusers bypass RLS.** I created a `NOSUPERUSER NOBYPASSRLS` app role and used `FORCE`.
-   On RDS a one-off ECS task creates it, so the app never holds master credentials.
-2. **My AWS account couldn't deploy anything.** I read the explicit-deny errors, found the
-   Organizations SCP, probed which actions were allowed, and adapted: emulator plus validated IaC,
-   with real AWS used only where allowed.
-3. **LocalStack's free image was retired (Mar 2026).** I switched to moto (Apache-2.0) and kept the
-   Terraform identical by overriding provider endpoints.
-4. **Prisma has no RLS DSL.** I hand-wrote policies in migration SQL and route every query through a
-   `withTenant()` transaction.
-5. **Presigned PUT can't cap file size.** I switched to presigned POST with `content-length-range`.
-6. **Login before tenant context.** RLS hides users until the tenant is known, so login takes a company ID.
+1. `scripts/app.sh start`, then open the printed URL → "Acme · Admin". Dashboard → approve a pending loan → schedule.
+2. Log in as Bluebird → Acme's data is invisible.
+3. Create a customer with a national ID → masked → **Reveal** (KMS decrypt, audited).
+4. Approve a $60,000+ loan → AWS console:
+   - **DynamoDB** item `DONE`;
+   - **Lambda** logs;
+   - **X-Ray** trace;
+   - **SNS** alert.
+5. **CloudWatch dashboard** `loan-app-operations`, then **CloudTrail** event history.
+6. Show `infra/` (modules shared with `infra/local`), then `scripts/app.sh stop`.
 
-## 6. How to demo in 5 minutes
-
-1. Open https://mini-loan-saas-demo.pages.dev → "Acme · Admin". Show the dashboard, a pending loan,
-   approve it, and the generated schedule.
-2. Log out → "Bluebird · Admin". Acme's data is gone (tenant isolation).
-3. Locally (`npm run dev` with Docker up): create a customer with a national ID (masked; Reveal is
-   audited), approve a large loan, then show the worker log `event_processed` with SES and SNS ids.
-4. Show `infra/modules/app-services` used by both `infra/local` and `infra/`.
-5. Run `scripts/validate-iam-policies.sh` on the real account: 0 findings.
+Always-on static demo: https://da2lxef9ohfff.cloudfront.net (S3 + CloudFront).

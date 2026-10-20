@@ -12,11 +12,11 @@ from every other company's.
 
 | Area | Status |
 |---|---|
-| Public demo | ✅ **https://mini-loan-saas-demo.pages.dev** (Cloudflare Pages, static export + in-browser mock API) |
-| Full stack locally (API + web + worker + Postgres + AWS emulator) | ✅ Running; **47 automated tests passing** |
-| AWS services via local emulator (moto) | ✅ S3, KMS, EventBridge, SQS, SNS, SES, DynamoDB, SSM, Secrets Manager, CloudWatch: tested |
-| Real AWS (Free plan, $0) | ✅ Budgets, IAM Access Analyzer, CloudTrail event history, temporary-credential CLI |
-| Production Terraform (VPC, RDS, ECS Fargate, ECR, Lambda, Cognito) | ✅ `terraform validate` passes. ❌ **Not deployed** (account SCP blocks it) |
+| **AWS (eu-north-1)** | ✅ **Deployed**: ECS Fargate, Aurora Serverless v2, Lambda, SQS, EventBridge, SNS, SES, DynamoDB, KMS, S3, Secrets Manager, SSM, CloudWatch, X-Ray, CloudTrail, Scheduler, Cognito, CloudFront (Terraform) |
+| AWS static demo (S3 + CloudFront) | ✅ https://da2lxef9ohfff.cloudfront.net |
+| Full app on AWS | ✅ On demand: `scripts/app.sh start` (≈ $0.09/h while running; idle ≈ $2/month) |
+| Cloudflare Pages mirror | ✅ https://mini-loan-saas-demo.pages.dev |
+| Tests | ✅ 48 automated tests (API, AWS integration against an emulator, worker, demo); CI green |
 
 See [AWS_SERVICES.md](AWS_SERVICES.md) for the full, verified inventory.
 
